@@ -183,7 +183,8 @@ as a separate process). One test waits 5 seconds on purpose (the locked-ledger t
 `test/items.test.js` (levels and prices), `test/reports.test.js` (the two reports) and
 `test/reports-cli.test.js` (the four new commands through the real entry point), and left the two stage 1
 test files as they were. Stage 3 added `test/csv.test.js` (the CSV reader), `test/import.test.js`
-(`recordMovements` and the import, as a library; one more test that waits 5 seconds on a lock) and
+(`recordMovements` and the import, as a library; one more test that waits on purpose, 10 seconds, for two
+locked-ledger checks) and
 `test/import-cli.test.js` (the `import` command through the real entry point), and left the five earlier test
 files as they were.
 
