@@ -205,6 +205,16 @@ eight processes setting levels and prices at once, reports read while settings a
 amounts beyond what a JavaScript number can count, damaged items files and awkward input. It takes about 40
 seconds and prints PASS or FAIL per check.
 
+```
+npm run stress:import
+```
+
+runs `stress/stress-import.mjs`, the same idea for stage 3: a CSV of 100,000 rows with one row in seven bad in
+six different ways, checked row for row against a separate calculation; eight processes importing at once;
+imports racing single movements and readers; a lock left behind and a damaged ledger; 42 awkward CSV files;
+files in the wrong encoding; awkward command lines; and the command killed part-way twenty times. It takes
+about 45 seconds and prints PASS or FAIL per check.
+
 ## The parts and how they connect
 
 ```
@@ -470,4 +480,12 @@ Stage 3 limits:
 - **When every row of a CSV fails the item, type or quantity check, the ledger is not opened at all,** so a
   damaged or locked ledger goes unreported by that import: exit `3`, nothing recorded.
 - **A crash in the middle of an import can leave some of its rows written and the last one cut off,** which is
-  the first limit above with more lines at stake.
+  the first limit above with more lines at stake. The stress test kills the command twenty times and has not
+  seen it happen, but it cannot choose the instant of the kill, so that is not proof.
+- **A reader that takes no lock (`qty`, `low`, `value`) could in principle read while an import is half
+  appended** and stop on a cut-off line (rule 7); running it again would then work. In the stress test 1,200
+  reads during imports of 4,000 rows each never saw it. That is not proof either.
+- **A busy ledger can refuse a whole import as locked.** The lock is not a queue: with two processes importing
+  and two recording single movements without pause, some imports waited the full 5 seconds and were refused
+  (exit `1`, nothing written; run it again).
+- **A byte-order mark or other invisible space round a column name or a field is dropped like a space.**
