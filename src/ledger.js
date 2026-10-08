@@ -196,3 +196,59 @@ export function recordMovement(file, { item: rawItem, type: rawType, qty: rawQty
     return { movement, quantity };
   });
 }
+
+// Records many movements in one go, in the order given, and returns one result per entry, in
+// the same order: { movement, quantity } for an entry that was recorded, { error } (a
+// LedgerError) for one that was not. An entry that cannot be recorded never stops the others.
+// Every entry is checked against the stock as it stands after the entries before it, so an
+// "out" may use goods that an earlier entry of the same call brought in.
+// One lock and one write for the whole call: no other writer can land between two entries,
+// and the ledger is read once, not once per entry. All recorded movements carry the same `at`.
+// A damaged or locked ledger is still a refusal of the whole call (it throws, nothing written).
+export function recordMovements(file, entries, { at = new Date() } = {}) {
+  if (!(at instanceof Date) || Number.isNaN(at.getTime())) {
+    throw new LedgerError('BAD_TIME', 'at must be a valid Date');
+  }
+  const stamp = at.toISOString();
+  const results = entries.map((entry) => {
+    try {
+      return { movement: { at: stamp, item: normalizeItem(entry?.item), type: checkType(entry?.type), qty: parseQuantity(entry?.qty) } };
+    } catch (err) {
+      if (!(err instanceof LedgerError)) throw err;
+      return { error: err };
+    }
+  });
+  if (results.every((result) => result.error)) return results;   // nothing to write: the ledger is not touched
+
+  return withLock(file, () => {
+    const text = readText(file);
+    const totals = quantities(parseLedgerText(text, file));
+    const lines = [];
+    results.forEach((result, index) => {
+      if (result.error) return;
+      const { item, type, qty } = result.movement;
+      const current = totals.get(item) ?? 0;
+      if (type === 'out' && qty > current) {
+        results[index] = { error: new LedgerError('INSUFFICIENT_STOCK', `cannot take ${qty} of "${item}" out: only ${current} in stock at that point`) };
+        return;
+      }
+      const quantity = type === 'in' ? current + qty : current - qty;
+      if (!Number.isSafeInteger(quantity)) {
+        results[index] = { error: new LedgerError('QUANTITY_TOO_LARGE', `adding ${qty} to "${item}" would go beyond what can be counted exactly`) };
+        return;
+      }
+      totals.set(item, quantity);
+      result.quantity = quantity;
+      lines.push(`${JSON.stringify(result.movement)}\n`);
+    });
+    if (lines.length > 0) {
+      const lineBreakFirst = text !== '' && !text.endsWith('\n') ? '\n' : '';
+      try {
+        fs.appendFileSync(file, `${lineBreakFirst}${lines.join('')}`);
+      } catch (err) {
+        throw fileError(file, err);
+      }
+    }
+    return results;
+  });
+}
