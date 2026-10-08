@@ -111,7 +111,8 @@ npm run stress:reports
 
 runs `stress/stress-reports.mjs`, the same idea for stage 2: reports over a large ledger with many items,
 eight processes setting levels and prices at once, reports read while settings and movements are written,
-amounts beyond what a JavaScript number can count, damaged items files and awkward input.
+amounts beyond what a JavaScript number can count, damaged items files and awkward input. It takes about 40
+seconds and prints PASS or FAIL per check.
 
 ## The parts and how they connect
 
@@ -286,6 +287,10 @@ Stage 2 rules:
 - **The items file has the same crash behaviour as the ledger** (first limit above): a half-written line or a
   lock left behind must be cleared by hand.
 - **Stage 3 (CSV import) has no way yet to bring in levels or prices in bulk**; `recordSetting()` is the
-  function to call, one setting at a time, and it reads the whole items file each time.
+  function to call, one setting at a time, and it reads the whole items file each time: 2,000 settings one
+  after another took 16 seconds in the stress test.
+- **A report on a ledger file that does not exist is an empty report, exit `0`,** not a refusal — the same as
+  `qty`, because a missing file is an empty ledger. A mistyped `--file` therefore reports nothing below its
+  level and `total: 0.00`.
 - **Lower-casing follows JavaScript's `toLowerCase()`,** which is not the same as "equal to a human reader" in
   every language.
