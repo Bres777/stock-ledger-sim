@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "node --test",
-    "stress": "node stress/stress.mjs"
+    "stress": "node stress/stress.mjs",
+    "stress:reports": "node stress/stress-reports.mjs"
   },
   "license": "MIT"
 }
