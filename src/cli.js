@@ -1,9 +1,11 @@
-// The command line. Exit codes: 0 done, 1 refused by the ledger, 2 command not understood.
+// The command line. Exit codes: 0 done, 1 refused by the ledger, 2 command not understood,
+// 3 an import that rejected at least one row (every other row is recorded).
 
 import path from 'node:path';
 import { DEFAULT_LEDGER_FILE, LedgerError, normalizeItem, quantities, quantityOf, readMovements, recordMovement } from './ledger.js';
 import { itemsFileFor, readSettings, recordSetting } from './items.js';
 import { lowStock, stockValue } from './reports.js';
+import { importCsv } from './import.js';
 
 export const USAGE = `Usage:
   stock-ledger in  <item> <quantity>   record goods in
@@ -13,21 +15,26 @@ export const USAGE = `Usage:
   stock-ledger price <item> <amount>   set the item's unit price, such as 12.50
   stock-ledger low                     report: items below their re-order level
   stock-ledger value                   report: the value of the stock, per item and in total
+  stock-ledger import <csv file>       record the movements in a CSV file with the columns
+                                       item,type,quantity; a bad row is rejected, the rest recorded
 
 Options:
   --file <path>   ledger file to use. Otherwise the STOCK_LEDGER_FILE environment
                   variable, otherwise ${DEFAULT_LEDGER_FILE} in the current folder.
                   Levels and prices are kept beside it, in <ledger file>.items.jsonl.
+  --rejects <path>
+                  with import: write the rejected rows to this new .csv file
   --help          show this text
 `;
 
 class UsageError extends Error {}
 
-// Only --file, --help and -- are options. Anything else, including "-5", is a plain word,
+// Only --file, --rejects, --help and -- are options. Anything else, including "-5", is a plain word,
 // so a negative quantity is refused as a quantity and not misread as an option.
 function parseArgs(argv) {
   const words = [];
   let file;
+  let rejects;
   let help = false;
   let optionsOver = false;
   for (let i = 0; i < argv.length; i += 1) {
@@ -45,23 +52,31 @@ function parseArgs(argv) {
       file = argv[i];
     } else if (arg.startsWith('--file=')) {
       file = arg.slice('--file='.length);
+    } else if (arg === '--rejects') {
+      i += 1;
+      if (i >= argv.length) throw new UsageError('--rejects needs a path');
+      rejects = argv[i];
+    } else if (arg.startsWith('--rejects=')) {
+      rejects = arg.slice('--rejects='.length);
     } else {
       throw new UsageError(`unknown option ${arg}`);
     }
   }
   if (file === '') throw new UsageError('--file needs a path');
-  return { words, file, help };
+  if (rejects === '') throw new UsageError('--rejects needs a path');
+  return { words, file, rejects, help };
 }
 
 export function run(argv, { env = process.env, cwd = process.cwd(), stdout = process.stdout, stderr = process.stderr } = {}) {
   try {
-    const { words, file: fileOption, help } = parseArgs(argv);
+    const { words, file: fileOption, rejects, help } = parseArgs(argv);
     if (help) {
       stdout.write(USAGE);
       return 0;
     }
     const [command, ...rest] = words;
     const file = path.resolve(cwd, fileOption ?? (env.STOCK_LEDGER_FILE || DEFAULT_LEDGER_FILE));
+    if (rejects !== undefined && command !== 'import') throw new UsageError('--rejects is only for "import"');
 
     if (command === 'in' || command === 'out') {
       if (rest.length !== 2) throw new UsageError(`"${command}" needs an item and a quantity`);
@@ -109,6 +124,28 @@ export function run(argv, { env = process.env, cwd = process.cwd(), stdout = pro
         stderr.write(`stock-ledger: the total excludes ${excluded}\n`);
       }
       return 0;
+    }
+    if (command === 'import') {
+      if (rest.length !== 1) throw new UsageError('"import" needs exactly one CSV file');
+      const csv = rest[0];
+      const result = importCsv(file, path.resolve(cwd, csv), { rejectsFile: rejects === undefined ? undefined : path.resolve(cwd, rejects) });
+      const { rows, recorded, rejected } = result;
+      const movements = recorded.length === 1 ? '1 movement' : `${recorded.length} movements`;
+      if (rejected.length === 0) {
+        stdout.write(`imported ${movements} from ${csv}${rows === 0 ? ' (the file has no rows)' : ''}\n`);
+        return 0;
+      }
+      // A rejected row is never passed over in silence: each one is named, with its line and the reason.
+      for (const { line, reason } of rejected) stderr.write(`stock-ledger: ${csv} line ${line} rejected: ${reason}\n`);
+      const ofRows = `${rejected.length} of ${rows} ${rows === 1 ? 'row' : 'rows'}`;
+      stdout.write(`imported ${movements} from ${csv}; rejected ${ofRows}\n`);
+      const others = recorded.length === 1 ? 'The other 1 is' : `The other ${recorded.length} are`;
+      const next = recorded.length === 0 ? 'Nothing was recorded.'
+        : `${others} recorded: do not import ${csv} again, correct the rejected rows and import only those.`;
+      stderr.write(`stock-ledger: ${ofRows} rejected and not in the ledger. ${next}\n`);
+      if (result.rejectsFile !== undefined) stderr.write(`stock-ledger: the rejected rows were written to ${rejects}\n`);
+      if (result.rejectsError !== undefined) stderr.write(`stock-ledger: ${result.rejectsError}\n`);
+      return 3;
     }
     throw new UsageError(command === undefined ? 'no command given' : `unknown command "${command}"`);
   } catch (err) {
