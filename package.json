@@ -3,6 +3,9 @@
   "version": "0.0.1",
   "type": "module",
   "description": "A small command-line stock ledger. Throwaway test project.",
+  "bin": {
+    "stock-ledger": "bin/stock-ledger.js"
+  },
   "scripts": {
     "test": "node --test"
   },
