@@ -47,6 +47,14 @@ npm test
 runs `node --test`: `test/ledger.test.js` (the library) and `test/cli.test.js` (the real entry point, started
 as a separate process). One test waits 5 seconds on purpose (the locked-ledger test).
 
+```
+npm run stress
+```
+
+runs `stress/stress.mjs`, which tries to break the ledger: 50,000 movements, eight processes writing at once,
+eight processes racing to take the last stock, readers during writes, a lock left behind, damaged files and
+awkward input. It is not part of `npm test`; it takes about 15 seconds and prints PASS or FAIL per check.
+
 ## The parts and how they connect
 
 ```
