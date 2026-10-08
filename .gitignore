@@ -1,3 +1,4 @@
 # A ledger made by running the tool inside the repository is data, not source.
 stock-ledger.jsonl
+*.items.jsonl
 *.lock

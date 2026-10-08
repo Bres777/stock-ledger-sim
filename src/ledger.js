@@ -139,7 +139,8 @@ function sleep(ms) {
 
 // One writer at a time: the check "is there enough stock" and the write that follows
 // must not be interleaved with another process doing the same.
-function withLock(file, action) {
+// Exported for src/items.js, which guards its own file the same way.
+export function withLock(file, action) {
   const lockFile = `${file}.lock`;
   const giveUpAt = Date.now() + LOCK_WAIT_MS;
   let handle;
