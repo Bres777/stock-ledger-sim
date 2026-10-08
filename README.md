@@ -2,7 +2,7 @@
 
 A small command-line stock ledger. Throwaway project, built in stages by separate workers.
 
-Stages: 1. Movements and quantities (built) — 2. Reports (built) — 3. CSV import (not built).
+Stages: 1. Movements and quantities (built) — 2. Reports (built) — 3. CSV import (built).
 
 Plain Node.js, ES modules, no dependencies. Written and tested on Node v22.20.0, Windows 10.
 
@@ -16,6 +16,7 @@ node bin/stock-ledger.js level <item> <number>     set the item's re-order level
 node bin/stock-ledger.js price <item> <amount>     set the item's unit price, such as 12.50
 node bin/stock-ledger.js low                       report: items below their re-order level
 node bin/stock-ledger.js value                     report: the value of the stock, per item and in total
+node bin/stock-ledger.js import <csv file>         record the movements in a CSV file; bad rows are rejected
 ```
 
 ```
@@ -66,6 +67,86 @@ no price` on the error stream, and still exits `0`.
 With nothing to report, `low` prints `no items below their re-order level` (adding `(no re-order levels are
 set)` when that is why) and `value` prints `total: 0.00`. Both lists are sorted by item name.
 
+### Importing a CSV file (stage 3)
+
+`import` records many movements from one file. The file is CSV: a first line naming the columns `item`, `type`
+and `quantity`, then one movement per line. Given `moves.csv`:
+
+```
+item,type,quantity
+widget,in,20
+bolt,out,40
+"blue, widget",in,5
+gadget,out,9
+nut,in,12.5
+washer,in
+```
+
+```
+> node bin/stock-ledger.js import moves.csv --rejects rejects.csv
+stock-ledger: moves.csv line 5 rejected: cannot take 9 of "gadget" out: only 4 in stock at that point
+stock-ledger: moves.csv line 6 rejected: quantity must be a whole number of 1 or more, written in digits only (got "12.5")
+stock-ledger: moves.csv line 7 rejected: the row has 2 fields, the header has 3
+imported 3 movements from moves.csv; rejected 3 of 6 rows
+stock-ledger: 3 of 6 rows rejected and not in the ledger. The other 3 are recorded: do not import moves.csv again, correct the rejected rows and import only those.
+stock-ledger: the rejected rows were written to rejects.csv
+> node bin/stock-ledger.js qty widget
+widget: 27
+> node bin/stock-ledger.js qty bolt
+bolt: 60
+> node bin/stock-ledger.js qty gadget
+gadget: 4
+```
+
+The three good rows are in the ledger. The three bad ones are not, and each is named with its line in the CSV
+and the reason. Only the line `imported …` is on the output stream; the lines starting `stock-ledger:` are on
+the error stream. The exit code is `3`. With every row good the command prints only
+`imported 6 movements from moves.csv` and exits `0`.
+
+**Do not import the same file again after fixing it:** the good rows would be recorded a second time. Correct
+only the rejected rows and import only those. `--rejects <path>` is there for that: it writes the rejected
+rows, exactly as they were and under the same header, to a new file. The command above leaves `rejects.csv` as:
+
+```
+item,type,quantity
+gadget,out,9
+nut,in,12.5
+washer,in
+```
+
+Correct those three lines in it, so that `rejects.csv` reads:
+
+```
+item,type,quantity
+gadget,out,4
+nut,in,12
+washer,in,30
+```
+
+```
+> node bin/stock-ledger.js import rejects.csv
+imported 3 movements from rejects.csv
+> node bin/stock-ledger.js qty gadget
+gadget: 0
+```
+
+The rejects file is created only when a row is rejected. Its name must end in `.csv`, and a file that is already
+there is never overwritten: the import is refused before anything is recorded.
+
+What the CSV file must look like:
+
+- **The first line names the columns**: `item`, `type` and `quantity`, in any order and any case (`qty` is
+  accepted for `quantity`). A file with no such line, with a column missing, with any other column, or with the
+  columns separated by semicolons or tabs is refused as a whole: exit `1`, nothing recorded.
+- **`type`** is `in` or `out`, in any case. **`item`** and **`quantity`** follow rules 3 and 4 below. Spaces
+  round a field are dropped. A quantity is digits only: `1,000`, `5.0` and `12.5` are rejected.
+- **Quotes**: a field holding a comma or a quote is wrapped in double quotes, and a quote inside it is written
+  twice: `"blue, widget"`, `"6"" nail"`. This is what a spreadsheet writes when it saves as CSV.
+- **Text is UTF-8.** In Excel choose "CSV UTF-8". Lines may end the Windows or the Unix way. Lines holding only
+  spaces are passed over.
+- **The rows are recorded in the order of the file**, so goods must come in on an earlier line than the line
+  that takes them out.
+
 Which ledger file is used, first match wins:
 
 1. `--file <path>` (or `--file=<path>`) on the command line;
@@ -79,11 +160,17 @@ Levels and prices are kept in a second file beside the ledger: the ledger file's
 added (`stock-ledger.jsonl.items.jsonl`). It follows whichever ledger file is chosen and is created by the
 first `level` or `price`. Move or copy the two files together.
 
-Only `--file`, `--help` (or `-h`) and `--` are options. Put `--` before an item whose name starts with `--`.
-An item name with spaces needs quotes: `in "blue widget" 5`.
+Only `--file`, `--rejects`, `--help` (or `-h`) and `--` are options. `--rejects <path>` (or `--rejects=<path>`)
+goes with `import` only; with any other command it is not understood. Put `--` before an item whose name starts
+with `--`. An item name with spaces needs quotes: `in "blue widget" 5`.
+
+The CSV file and the rejects file are separate from the ledger file: a relative path for either is taken from
+the folder the command is run from, and `--file` and `STOCK_LEDGER_FILE` still choose the ledger they go into.
 
 Exit codes: `0` done · `1` the ledger refused (reason on the error stream, nothing written) · `2` the command
-was not understood (usage on the error stream, nothing written).
+was not understood (usage on the error stream, nothing written) · `3` an import rejected at least one row:
+every other row is recorded, and each rejected row is named on the error stream. `3` is the only exit code
+after which something may have been written although something was refused.
 
 ## Test
 
@@ -95,7 +182,10 @@ runs `node --test`: `test/ledger.test.js` (the library) and `test/cli.test.js` (
 as a separate process). One test waits 5 seconds on purpose (the locked-ledger test). Stage 2 added
 `test/items.test.js` (levels and prices), `test/reports.test.js` (the two reports) and
 `test/reports-cli.test.js` (the four new commands through the real entry point), and left the two stage 1
-test files as they were.
+test files as they were. Stage 3 added `test/csv.test.js` (the CSV reader), `test/import.test.js`
+(`recordMovements` and the import, as a library; one more test that waits 5 seconds on a lock) and
+`test/import-cli.test.js` (the `import` command through the real entry point), and left the five earlier test
+files as they were.
 
 ```
 npm run stress
@@ -131,12 +221,24 @@ src/cli.js            run(argv, {env, cwd, stdout, stderr}) -> exit code. Reads 
         |   <ledger file>.items.jsonl    the settings.
         |
         +-- src/reports.js   the two reports. Pure functions: given quantities and settings, they
-                             return the report. Touches no file.
+        |                    return the report. Touches no file.
+        |
+        +-- src/import.js    the CSV import. Reads the CSV file, checks the header, turns each row into
+                 |           a movement and hands them all, in one call, to recordMovements in
+                 |           src/ledger.js. Writes the rejects file. Never writes the ledger itself.
+                 |
+                 +-- src/csv.js    the CSV reader. Pure: text in, records out. Touches no file and
+                                   knows nothing about stock.
 ```
 
 The movements and the settings are the only state there is. For a report, `src/cli.js` does this and nothing
 more: `lowStock(quantities(readMovements(file)), readSettings(itemsFileFor(file)))`, and the same with
-`stockValue`.
+`stockValue`. For an import it calls `importCsv(file, csvFile, { rejectsFile })` and prints what comes back.
+
+The path of one imported row: `src/cli.js` → `importCsv` reads the CSV file → `parseCsv` splits it into
+records → `importCsvText` checks the header and each row's shape → `recordMovements` checks item, type and
+quantity with the same functions `recordMovement` uses, takes the ledger's lock, reads the ledger once, checks
+each row against the stock, and appends every accepted row in one write.
 
 What `src/ledger.js` exports — a later stage should build on these and not read the file itself:
 
@@ -151,6 +253,7 @@ What `src/ledger.js` exports — a later stage should build on these and not rea
 | `LedgerError` | Every deliberate refusal. Has a `code` (list below). |
 | `DEFAULT_LEDGER_FILE`, `MOVEMENT_TYPES` | `'stock-ledger.jsonl'`, `['in', 'out']`. |
 | `withLock(file, action)` | Runs `action` while holding `<file>.lock` (rule 8). Exported in stage 2 for `src/items.js`. |
+| `recordMovements(file, entries, {at})` | Stage 3. Many movements in one go: `entries` is a list of `{item, type, qty}`. Returns one result per entry, in the same order: `{movement, quantity}` if it was recorded, `{error}` (a `LedgerError`) if not. A bad entry never stops the others (rules 17–19). One lock, one read, one write; every recorded movement gets the same `at`. Throws, with nothing written, only when the ledger itself refuses: damaged, locked, unusable, or a bad `at`. |
 
 What `src/items.js` exports:
 
@@ -172,6 +275,20 @@ What `src/reports.js` exports — both take the `Map` from `quantities()` and th
 | `lowStock(quantities, settings)` | `[{item, quantity, level}]` for every item below its level, sorted by item. |
 | `stockValue(quantities, settings)` | `{lines: [{item, quantity, price, value}], total, unpriced: [{item, quantity}]}`. `price`, `value` and `total` are amount text. Both lists sorted by item. |
 
+What `src/import.js` exports:
+
+| Export | What it does |
+| --- | --- |
+| `importCsv(ledgerFile, csvFile, {at, rejectsFile})` | Imports a CSV file. Returns `{rows, recorded, rejected, header, rejectsFile, rejectsError}`. `rows` is the number of rows, not counting the header and blank lines; `recorded` is `[{line, movement, quantity}]`; `rejected` is `[{line, code, reason, raw}]`, where `raw` is the row's own text; both in file order, and `rows` is always `recorded.length + rejected.length`. `rejectsFile` is the file the rejected rows were written to, or `undefined` if none was written. `rejectsError` is set only if rows were rejected and that file could not be written after the good rows were already recorded. Throws a `LedgerError`, with nothing written, when the whole file is refused. |
+| `importCsvText(ledgerFile, text, {name, at})` | The same for CSV text already in memory, without the rejects file. `name` is what the CSV is called in messages. Returns `{rows, recorded, rejected, header}`. |
+| `IMPORT_COLUMNS` | `['item', 'type', 'quantity']`. |
+
+What `src/csv.js` exports:
+
+| Export | What it does |
+| --- | --- |
+| `parseCsv(text)` | `[{line, fields, raw, problem}]`, one per record, in order. `line` is the line the record starts on, from 1; `fields` are the values with quotes removed and not trimmed; `raw` is the record's own text; `problem` is `undefined`, or why its quoting cannot be trusted. A record with a problem is still returned, so one bad row never hides the next. |
+
 ## The ledger file
 
 Text, UTF-8, one movement per line, each line one JSON object:
@@ -190,7 +307,9 @@ Text, UTF-8, one movement per line, each line one JSON object:
 
 The order of the lines is the order the movements were recorded. Lines are only ever added at the end.
 
-Stage 2 did not change this file or its format in any way.
+Stage 2 did not change this file or its format in any way. Neither did stage 3: an imported movement is a line
+like any other, and nothing in the file says it came from an import. All the movements of one import carry the
+same `at`, the moment of the import.
 
 ## The items file
 
@@ -256,9 +375,41 @@ Stage 2 rules:
 16. **One writer at a time on the items file too**, with its own lock `<ledger file>.items.jsonl.lock`. It is
     a different lock from the ledger's, so a movement and a setting can be written at the same moment.
 
+Stage 3 rules:
+
+17. **An import records every row it can and rejects the rest.** A rejected row never stops the rows before it
+    or after it. It is never passed over without a word: each one is named on the error stream with its line
+    in the CSV and the reason, the output line counts them, and the exit code is `3`.
+18. **Every row ends up either recorded or rejected, never in between.** The number of rows is always the
+    number recorded plus the number rejected. A rejected row wrote nothing (rule 6, row by row).
+19. **Rows are applied in the order of the file, each against the stock as the rows before it left it.** An
+    `out` may use goods that an earlier row of the same file brought in. An `out` on a line before its `in` is
+    rejected, as it would be on the command line. A rejected row changes nothing for the rows after it.
+20. **The header must be right, or nothing is read.** It must name exactly `item`, `type` and `quantity`,
+    separated by commas. A missing or unknown column is never guessed at or ignored, because a row read with
+    the wrong columns is a wrong movement with no warning. The whole file is refused: exit `1`, nothing written.
+21. **A row follows the rules of the command line.** Rule 3 for the item, rule 4 for the quantity, rule 5 for
+    goods out. Two things are looser than on the command line: spaces round a field are dropped, and the type
+    may be in any case.
+22. **A row whose text cannot be trusted is rejected, not repaired.** That is a row with the wrong number of
+    fields, with a quote in the wrong place, or with bytes that are not UTF-8 (which would otherwise be recorded
+    under a mangled item name). A quote that is opened and never closed swallows the rest of the file, so
+    everything from that line to the end is rejected as one row; the rows before it are recorded.
+23. **One import is one write under one lock** (rule 8). The ledger is read once, every accepted row is
+    appended together, and no other writer's movement can land between two rows of one import. A damaged or
+    locked ledger refuses the whole import, as it refuses every write: exit `1`, nothing written.
+24. **Importing the same rows twice records them twice.** The ledger does not know a row has been imported
+    before. After an import that rejected rows, correct and import only the rejected rows.
+25. **The rejects file is never an existing file.** `--rejects` must name a file that is not there yet and whose
+    name ends in `.csv`; otherwise the import is refused before anything is recorded. It is created only when a
+    row is rejected.
+
 `LedgerError` codes: `BAD_ITEM`, `BAD_QUANTITY`, `BAD_TYPE`, `BAD_TIME`, `INSUFFICIENT_STOCK`,
 `QUANTITY_TOO_LARGE`, `DAMAGED_LEDGER`, `LOCKED`, `FILE_ERROR`; from stage 2 also `BAD_LEVEL`, `BAD_PRICE`,
-`BAD_SETTING`, `DAMAGED_ITEMS`, `NEGATIVE_STOCK`. All are refusals: exit code `1`.
+`BAD_SETTING`, `DAMAGED_ITEMS`, `NEGATIVE_STOCK`; from stage 3 also `BAD_CSV` (the header is wrong, or the file
+is empty or not UTF-8 text) and `BAD_ROW` (rule 22). Thrown, each is a refusal: exit code `1`. In an import a
+rejected row carries one of `BAD_ROW`, `BAD_ITEM`, `BAD_TYPE`, `BAD_QUANTITY`, `INSUFFICIENT_STOCK` or
+`QUANTITY_TOO_LARGE` as its `code`, and is not thrown.
 
 ## Known limits
 
@@ -286,11 +437,36 @@ Stage 2 rules:
   wording comes from stage 1's lock.
 - **The items file has the same crash behaviour as the ledger** (first limit above): a half-written line or a
   lock left behind must be cleared by hand.
-- **Stage 3 (CSV import) has no way yet to bring in levels or prices in bulk**; `recordSetting()` is the
-  function to call, one setting at a time, and it reads the whole items file each time: 2,000 settings one
-  after another took 16 seconds in the stress test.
+- **The CSV import brings in movements only, not levels or prices.** There is still no way to set them in
+  bulk; `recordSetting()` is the function to call, one setting at a time, and it reads the whole items file
+  each time: 2,000 settings one after another took 16 seconds in the stress test.
 - **A report on a ledger file that does not exist is an empty report, exit `0`,** not a refusal — the same as
   `qty`, because a missing file is an empty ledger. A mistyped `--file` therefore reports nothing below its
   level and `total: 0.00`.
 - **Lower-casing follows JavaScript's `toLowerCase()`,** which is not the same as "equal to a human reader" in
   every language.
+
+Stage 3 limits:
+
+- **An import cannot be tried out first.** There is no way to see which rows would be rejected without
+  recording the good ones, and no way to take an import back (rule 2).
+- **Nothing stops the same file being imported twice** (rule 24). The warning printed after a part import is
+  the only guard.
+- **Only the three columns.** A CSV with a date, a note or a reference column is refused (rule 20), not
+  imported without it. Every imported movement gets the time of the import as its `at`, not the date the goods
+  moved.
+- **Only commas.** A spreadsheet that writes CSV with semicolons, as Excel does in many European settings, is
+  refused with a message naming the header line; the file has to be saved again with commas.
+- **Spaces round a field are always dropped, even inside quotes,** and a space between a comma and an opening
+  quote (`a, "b"`) rejects the row.
+- **The whole CSV file is read into memory, and the whole ledger with it.**
+- **A row's line number is the line it starts on.** For a row with a line break inside quotes that is its
+  first line.
+- **A rejected row with bytes that are not UTF-8 is written to the rejects file with replacement characters,**
+  not with its original bytes.
+- **If the rejects file cannot be written after the good rows are recorded** (a full disk), the command says so
+  on the error stream and may leave that file empty; the rejected rows are still each named on the error stream.
+- **When every row of a CSV fails the item, type or quantity check, the ledger is not opened at all,** so a
+  damaged or locked ledger goes unreported by that import: exit `3`, nothing recorded.
+- **A crash in the middle of an import can leave some of its rows written and the last one cut off,** which is
+  the first limit above with more lines at stake.
