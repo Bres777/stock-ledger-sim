@@ -2,7 +2,9 @@
 
 A small command-line stock ledger. Throwaway project, built in stages by separate workers.
 
-Stages: 1. Movements and quantities (built) — 2. Reports (built) — 3. CSV import (built).
+Stages: 1. Movements and quantities (built) — 2. Reports (built) — 3. CSV import (built) — 4. What a batch
+write does and does not promise: rules 6, 18 and 23 reworded, and a test of a failed append (built; no change
+to how the tool behaves).
 
 Plain Node.js, ES modules, no dependencies. Written and tested on Node v22.20.0, Windows 10.
 
@@ -167,10 +169,11 @@ with `--`. An item name with spaces needs quotes: `in "blue widget" 5`.
 The CSV file and the rejects file are separate from the ledger file: a relative path for either is taken from
 the folder the command is run from, and `--file` and `STOCK_LEDGER_FILE` still choose the ledger they go into.
 
-Exit codes: `0` done · `1` the ledger refused (reason on the error stream, nothing written) · `2` the command
+Exit codes: `0` done · `1` the ledger refused, or a file could not be used (reason on the error stream; nothing
+written, with the one exception in "A failed append is not undone" under the known limits) · `2` the command
 was not understood (usage on the error stream, nothing written) · `3` an import rejected at least one row:
-every other row is recorded, and each rejected row is named on the error stream. `3` is the only exit code
-after which something may have been written although something was refused.
+every other row is recorded, and each rejected row is named on the error stream. Apart from that exception,
+`3` is the only exit code after which something may have been written although something was refused.
 
 ## Test
 
@@ -186,7 +189,10 @@ test files as they were. Stage 3 added `test/csv.test.js` (the CSV reader), `tes
 (`recordMovements` and the import, as a library; one more test that waits on purpose, 10 seconds, for two
 locked-ledger checks) and
 `test/import-cli.test.js` (the `import` command through the real entry point), and left the five earlier test
-files as they were.
+files as they were. Stage 4 added `test/append-failure.test.js`: two tests in which the system itself refuses
+the append to the ledger file, showing what the user is told and what is in the file afterwards (rule 23). On
+Windows the second one starts `powershell.exe` once, to hold a lock on the file from another process. It left
+the eight earlier test files, the three stress scripts and everything under `src/` as they were.
 
 ```
 npm run stress
@@ -249,7 +255,7 @@ more: `lowStock(quantities(readMovements(file)), readSettings(itemsFileFor(file)
 The path of one imported row: `src/cli.js` → `importCsv` reads the CSV file → `parseCsv` splits it into
 records → `importCsvText` checks the header and each row's shape → `recordMovements` checks item, type and
 quantity with the same functions `recordMovement` uses, takes the ledger's lock, reads the ledger once, checks
-each row against the stock, and appends every accepted row in one write.
+each row against the stock, and appends every accepted row in one append call (rule 23).
 
 What `src/ledger.js` exports — a later stage should build on these and not read the file itself:
 
@@ -264,7 +270,7 @@ What `src/ledger.js` exports — a later stage should build on these and not rea
 | `LedgerError` | Every deliberate refusal. Has a `code` (list below). |
 | `DEFAULT_LEDGER_FILE`, `MOVEMENT_TYPES` | `'stock-ledger.jsonl'`, `['in', 'out']`. |
 | `withLock(file, action)` | Runs `action` while holding `<file>.lock` (rule 8). Exported in stage 2 for `src/items.js`. |
-| `recordMovements(file, entries, {at})` | Stage 3. Many movements in one go: `entries` is a list of `{item, type, qty}`. Returns one result per entry, in the same order: `{movement, quantity}` if it was recorded, `{error}` (a `LedgerError`) if not. A bad entry never stops the others (rules 17–19). One lock, one read, one write; every recorded movement gets the same `at`. Throws, with nothing written, only when the ledger itself refuses: damaged, locked, unusable, or a bad `at`. |
+| `recordMovements(file, entries, {at})` | Stage 3. Many movements in one go: `entries` is a list of `{item, type, qty}`. Returns one result per entry, in the same order: `{movement, quantity}` if it was recorded, `{error}` (a `LedgerError`) if not. A bad entry never stops the others (rules 17–19). One lock, one read, one append call (rule 23); every recorded movement gets the same `at`. Throws only when the ledger itself refuses. Damaged, locked or a bad `at`: nothing was written. A file that cannot be used (`FILE_ERROR`): nothing was written if it could not be read or opened; if the append itself failed, see rule 23. |
 
 What `src/items.js` exports:
 
@@ -290,7 +296,7 @@ What `src/import.js` exports:
 
 | Export | What it does |
 | --- | --- |
-| `importCsv(ledgerFile, csvFile, {at, rejectsFile})` | Imports a CSV file. Returns `{rows, recorded, rejected, header, rejectsFile, rejectsError}`. `rows` is the number of rows, not counting the header and blank lines; `recorded` is `[{line, movement, quantity}]`; `rejected` is `[{line, code, reason, raw}]`, where `raw` is the row's own text; both in file order, and `rows` is always `recorded.length + rejected.length`. `rejectsFile` is the file the rejected rows were written to, or `undefined` if none was written. `rejectsError` is set only if rows were rejected and that file could not be written after the good rows were already recorded. Throws a `LedgerError`, with nothing written, when the whole file is refused. |
+| `importCsv(ledgerFile, csvFile, {at, rejectsFile})` | Imports a CSV file. Returns `{rows, recorded, rejected, header, rejectsFile, rejectsError}`. `rows` is the number of rows, not counting the header and blank lines; `recorded` is `[{line, movement, quantity}]`; `rejected` is `[{line, code, reason, raw}]`, where `raw` is the row's own text; both in file order, and `rows` is always `recorded.length + rejected.length`. `rejectsFile` is the file the rejected rows were written to, or `undefined` if none was written. `rejectsError` is set only if rows were rejected and that file could not be written after the good rows were already recorded. Throws a `LedgerError`, with nothing written, when the whole CSV file is refused; and throws whatever `recordMovements` throws when the ledger itself refuses (see that row, above). |
 | `importCsvText(ledgerFile, text, {name, at})` | The same for CSV text already in memory, without the rejects file. `name` is what the CSV is called in messages. Returns `{rows, recorded, rejected, header}`. |
 | `IMPORT_COLUMNS` | `['item', 'type', 'quantity']`. |
 
@@ -353,7 +359,9 @@ line is its price; earlier ones stay in the file as history and no command shows
    Refused: `0`, `-5`, `1.5`, `1e3`, `0x10`, `+5`, `05`, a quantity with spaces round it.
 5. **Goods out can never take an item below zero.** Taking out more than is in stock is refused, and so is
    taking out an item that has never come in.
-6. **Refused means nothing was written.** A movement is written whole or not at all.
+6. **Refused means nothing was written.** Every check is made before the write, so a movement the ledger
+   refuses wrote nothing. This is about the checks, not about a write that fails or is cut short: see "A
+   failed append is not undone" in the known limits.
 7. **A line that is not a valid movement stops everything**, reading and writing, with the line number. It is
    never skipped, because skipping it would give a wrong quantity with no warning. The line must be repaired
    or removed by hand. Lines holding only spaces are passed over, a byte-order mark and Windows line ends are
@@ -391,8 +399,11 @@ Stage 3 rules:
 17. **An import records every row it can and rejects the rest.** A rejected row never stops the rows before it
     or after it. It is never passed over without a word: each one is named on the error stream with its line
     in the CSV and the reason, the output line counts them, and the exit code is `3`.
-18. **Every row ends up either recorded or rejected, never in between.** The number of rows is always the
-    number recorded plus the number rejected. A rejected row wrote nothing (rule 6, row by row).
+18. **Every row is counted once: as recorded or as rejected.** The number of rows is always the number recorded
+    plus the number rejected. Whether a row is rejected is decided before anything is written, so a rejected
+    row wrote nothing (rule 6, row by row). This is about how the rows of an import that ran to its end are
+    counted and reported. It is not a promise about the ledger file when the append itself fails or is cut
+    short: for that see rule 23 and the known limits.
 19. **Rows are applied in the order of the file, each against the stock as the rows before it left it.** An
     `out` may use goods that an earlier row of the same file brought in. An `out` on a line before its `in` is
     rejected, as it would be on the command line. A rejected row changes nothing for the rows after it.
@@ -406,9 +417,19 @@ Stage 3 rules:
     fields, with a quote in the wrong place, or with bytes that are not UTF-8 (which would otherwise be recorded
     under a mangled item name). A quote that is opened and never closed swallows the rest of the file, so
     everything from that line to the end is rejected as one row; the rows before it are recorded.
-23. **One import is one write under one lock** (rule 8). The ledger is read once, every accepted row is
-    appended together, and no other writer's movement can land between two rows of one import. A damaged or
-    locked ledger refuses the whole import, as it refuses every write: exit `1`, nothing written.
+23. **One import is one append under one lock** (rule 8) **— not an all-or-nothing transaction.** The ledger is
+    read once, the lines of every accepted row are joined into one text, and that text is handed to the system
+    in a single append call while the lock is held. So no writer that takes the lock — every `in`, `out` and
+    `import` does — can put a movement between two rows of one import. That is all it means. The append is
+    not undone if it fails or is cut short:
+    - if the system refuses the append before taking any of the text, the ledger file is left as it was, and
+      the command gives the system's reason on the error stream and exits `1` (tested, two real refusals:
+      `test/append-failure.test.js`);
+    - if the append stops part-way — the process is killed, or the system takes part of the text and then
+      fails — some of the import's rows can be in the file and the last one cut off (known limits).
+
+    A damaged or locked ledger is found before the append and refuses the whole import, as it refuses every
+    write: exit `1`, nothing written.
 24. **Importing the same rows twice records them twice.** The ledger does not know a row has been imported
     before. After an import that rejected rows, correct and import only the rejected rows.
 25. **The rejects file is never an existing file.** `--rejects` must name a file that is not there yet and whose
@@ -489,3 +510,24 @@ Stage 3 limits:
   and two recording single movements without pause, some imports waited the full 5 seconds and were refused
   (exit `1`, nothing written; run it again).
 - **A byte-order mark or other invisible space round a column name or a field is dropped like a space.**
+
+Stage 4 limits:
+
+- **A failed append is not undone.** Every write to the ledger — one movement or a whole import — is one append
+  call, and `src/ledger.js` has no way to take back what the system has already written. Two real failures
+  are tested (`test/append-failure.test.js`), and in both the system took none of the text and the ledger file
+  was left byte for byte as it was: the ledger file read-only, and, on Windows, another process holding a lock
+  on a byte the write would cover. A failure after part of the text is in — a disk that fills during the write
+  — could not be produced for a test and has not been seen. By the code, what the system had taken would stay
+  in the file, as after a crash (the first limit above, and "A crash in the middle of an import"), and the
+  command would exit `1` with `cannot use ledger file …`. That message gives the system's reason; it never says
+  whether anything was written. After it, run `qty` on any item: if the ledger is damaged it says so, with the
+  line.
+- **The lock keeps out only writers that take it.** Every command of this tool does. Anything else that writes
+  the ledger file — an editor, a script, a copy — is not held back by `<ledger file>.lock` and can write in the
+  middle of an import.
+- **The items file is written the same way** (`recordSetting`: one append call, not undone), so both limits
+  above hold for it too. No test makes that append fail.
+- **The second append-failure test runs on Windows only.** It needs a byte-range lock held by `powershell.exe`;
+  on other systems it is reported as skipped. The first one is skipped for a user who can write to a read-only
+  file (root).
