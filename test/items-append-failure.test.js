@@ -132,7 +132,8 @@ test('the write of a setting refused by the system after the items file was open
   const release = await lockOneByte(file, LOCKED_BYTE);
   try {
     // The items file is read past the lock without trouble: the read stops before the locked byte.
-    assert.equal(cli(dir, ['low']).out, LOW_BEFORE);
+    const before = cli(dir, ['low']);
+    assert.equal(before.out, LOW_BEFORE, `the read reached the locked byte (raise LOCKED_BYTE for this runtime): ${before.err}`);
 
     const refused = cli(dir, ['level', LONG_ITEM, '20']);
     assert.deepEqual(refused, { code: 1, out: '', err: `stock-ledger: cannot use items file ${file}: EBUSY: resource busy or locked, write\n` });
