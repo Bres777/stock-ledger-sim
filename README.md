@@ -5,7 +5,8 @@ A small command-line stock ledger. Throwaway project, built in stages by separat
 Stages: 1. Movements and quantities (built) — 2. Reports (built) — 3. CSV import (built) — 4. What a batch
 write does and does not promise: rules 6, 18 and 23 reworded, and a test of a failed append (built; no change
 to how the tool behaves) — 5. The same test for the items file (built; a test and this README only, no change
-to how the tool behaves).
+to how the tool behaves) — 6. The lock helper the two append-failure tests shared by copy, lifted into one
+module (built; test files and this README only, no change to how the tool behaves).
 
 Plain Node.js, ES modules, no dependencies. Written and tested on Node v22.20.0, Windows 10.
 
@@ -201,7 +202,10 @@ holds. Stage 5 added `test/items-append-failure.test.js`: the same two failures 
 through `level` and `price` (and `recordSetting` as a library), showing what the user is told and that the
 items file is left as it was. It has the same two skips as the stage 4 file, for the same reasons; on Windows
 it too starts `powershell.exe` once. Stage 5 left the nine earlier test files, the three stress scripts and
-everything under `src/` as they were.
+everything under `src/` as they were. Stage 6: the helper that holds that lock, `lockOneByte(file, offset)`,
+which both append-failure tests had held as a copy, now lives once in `test-support/lock-one-byte.js` and both
+import it — outside `test/` because `node --test` runs every `.js` file under `test/` as a test file and would
+count it; the tests' assertions, skips and lock offsets are as they were.
 
 ```
 npm run stress
