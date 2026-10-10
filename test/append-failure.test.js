@@ -76,7 +76,8 @@ const LOCKED_BYTE = 1024 * 1024;
 async function lockOneByte(file) {
   const script = `$f=[IO.File]::Open($env:STOCK_LEDGER_TEST_FILE,'Open','ReadWrite','ReadWrite,Delete');$f.Lock(${LOCKED_BYTE},1);[Console]::Out.WriteLine('HELD');[Console]::Out.Flush();[void][Console]::In.ReadLine();$f.Close()`;
   const helper = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, STOCK_LEDGER_TEST_FILE: file }, stdio: ['pipe', 'pipe', 'pipe'] });
-  const closed = new Promise((resolve) => { helper.on('close', resolve); helper.on('error', resolve); });
+  let err = '';
+  const closed = new Promise((resolve) => { helper.on('close', resolve); helper.on('error', (error) => { err += error.message; resolve(); }); });
   // The helper ends when its input ends. It is always ended, and waited for, before the test is over:
   // a helper left running would keep the file open and the test run from finishing.
   let released;
@@ -91,7 +92,6 @@ async function lockOneByte(file) {
     return released;
   };
   let out = '';
-  let err = '';
   helper.stderr.on('data', (data) => { err += data; });
   try {
     await new Promise((resolve, reject) => {
