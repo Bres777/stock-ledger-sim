@@ -14,8 +14,13 @@ import { spawn } from 'node:child_process';
 // past the end of the file than the offset would be refused at the read, not the write; each test asserts
 // the read first, so that shows up as a failed read with EBUSY, not as a false pass.) Windows only: the
 // lock is held by powershell.exe, so the tests that use this helper are skipped off Windows.
+//
+// The script starts with $ErrorActionPreference='Stop' (stage 6 review, H-1): without it a failed Open or
+// Lock is only an error record, the script goes on and prints HELD, and the helper would resolve without
+// holding anything. With it the script stops there, prints nothing, and the helper rejects with the
+// system's reason ("the lock helper ended before it held the lock: Could not find file ...").
 export async function lockOneByte(file, offset) {
-  const script = `$f=[IO.File]::Open($env:STOCK_LEDGER_TEST_FILE,'Open','ReadWrite','ReadWrite,Delete');$f.Lock(${offset},1);[Console]::Out.WriteLine('HELD');[Console]::Out.Flush();[void][Console]::In.ReadLine();$f.Close()`;
+  const script = `$ErrorActionPreference='Stop';$f=[IO.File]::Open($env:STOCK_LEDGER_TEST_FILE,'Open','ReadWrite','ReadWrite,Delete');$f.Lock(${offset},1);[Console]::Out.WriteLine('HELD');[Console]::Out.Flush();[void][Console]::In.ReadLine();$f.Close()`;
   const helper = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, STOCK_LEDGER_TEST_FILE: file }, stdio: ['pipe', 'pipe', 'pipe'] });
   let err = '';
   const closed = new Promise((resolve) => { helper.on('close', resolve); helper.on('error', (error) => { err += error.message; resolve(); }); });
