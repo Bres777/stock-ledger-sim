@@ -4,6 +4,7 @@ A small command-line stock ledger. Throwaway project, built in stages by separat
 
 Stages: 1. Movements and quantities (built) — 2. Reports (built) — 3. CSV import (built) — 4. What a batch
 write does and does not promise: rules 6, 18 and 23 reworded, and a test of a failed append (built; no change
+to how the tool behaves) — 5. The same test for the items file (built; a test and this README only, no change
 to how the tool behaves).
 
 Plain Node.js, ES modules, no dependencies. Written and tested on Node v22.20.0, Windows 10.
@@ -196,7 +197,11 @@ tests exist everywhere but do not run everywhere: the second is skipped off Wind
 when running as root, on systems that have `process.getuid` (see "Stage 4 limits"). Stage 4 left the eight
 earlier test files and the three stress scripts as they were. It changed no executable code under `src/`; it
 changed only two comments there, above `recordMovement` and `recordSetting`, which claimed more than the code
-holds.
+holds. Stage 5 added `test/items-append-failure.test.js`: the same two failures for the items file, made
+through `level` and `price` (and `recordSetting` as a library), showing what the user is told and that the
+items file is left as it was. It has the same two skips as the stage 4 file, for the same reasons; on Windows
+it too starts `powershell.exe` once. Stage 5 left the nine earlier test files, the three stress scripts and
+everything under `src/` as they were.
 
 ```
 npm run stress
@@ -532,7 +537,15 @@ Stage 4 limits:
   the ledger file — an editor, a script, a copy — is not held back by `<ledger file>.lock` and can write in the
   middle of an import.
 - **The items file is written the same way** (`recordSetting`: one append call, not undone), so both limits
-  above hold for it too. No test makes that append fail.
-- **The second append-failure test runs on Windows only.** It needs a byte-range lock held by `powershell.exe`;
-  on other systems it is reported as skipped. The first one is skipped when running as root, on systems that
-  have `process.getuid`. No other case is detected.
+  above hold for it too. Stage 5 tests the same two real failures for it (`test/items-append-failure.test.js`):
+  the items file read-only (`level` and `price` through the command line, and `recordSetting` as a library),
+  and, on Windows, another process holding a lock on a byte the write would cover (`level` through the command
+  line, `recordSetting` as a library). In both, the refused command exits `1` with `cannot use items file …`
+  and the system's reason, nothing is on the output stream, and the items file is left byte for byte as it
+  was, with no lock left behind. A failure after
+  part of the text is in is not produced for the items file either. In the lock test the setting has to be
+  long enough to reach the locked byte, so its item name is 20,000 characters: an item name has no length
+  limit, and nothing in the test depends on the name beyond its length.
+- **The second append-failure test runs on Windows only**, in both test files. It needs a byte-range lock held
+  by `powershell.exe`; on other systems it is reported as skipped. The first one, in both files, is skipped
+  when running as root, on systems that have `process.getuid`. No other case is detected.
