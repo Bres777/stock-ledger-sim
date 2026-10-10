@@ -73,21 +73,38 @@ test('the append refused because the ledger file is read-only: exit 1, the syste
 // file still opens and is still read (it is far shorter than 1 MiB), and an append long enough to reach
 // that byte is refused at the write. An append that ends before that byte is not affected.
 const LOCKED_BYTE = 1024 * 1024;
-async function lockOneByte(t, file) {
-  const script = `$f=[IO.File]::Open($env:STOCK_LEDGER_TEST_FILE,'Open','ReadWrite','ReadWrite');$f.Lock(${LOCKED_BYTE},1);[Console]::Out.WriteLine('HELD');[Console]::Out.Flush();[void][Console]::In.ReadLine();$f.Close()`;
+async function lockOneByte(file) {
+  const script = `$f=[IO.File]::Open($env:STOCK_LEDGER_TEST_FILE,'Open','ReadWrite','ReadWrite,Delete');$f.Lock(${LOCKED_BYTE},1);[Console]::Out.WriteLine('HELD');[Console]::Out.Flush();[void][Console]::In.ReadLine();$f.Close()`;
   const helper = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, STOCK_LEDGER_TEST_FILE: file }, stdio: ['pipe', 'pipe', 'pipe'] });
-  const closed = new Promise((resolve) => { helper.on('close', resolve); });
-  t.after(() => { helper.kill(); });
+  const closed = new Promise((resolve) => { helper.on('close', resolve); helper.on('error', resolve); });
+  // The helper ends when its input ends. It is always ended, and waited for, before the test is over:
+  // a helper left running would keep the file open and the test run from finishing.
+  let released;
+  const release = () => {
+    released ??= (async () => {
+      const kill = setTimeout(() => helper.kill(), 10000);
+      helper.stdin.on('error', () => {});
+      helper.stdin.end('\n');
+      await closed;
+      clearTimeout(kill);
+    })();
+    return released;
+  };
   let out = '';
   let err = '';
   helper.stderr.on('data', (data) => { err += data; });
-  await new Promise((resolve, reject) => {
-    const giveUp = setTimeout(() => reject(new Error(`the lock helper did not answer in 30 seconds: ${err}`)), 30000);
-    helper.stdout.on('data', (data) => { out += data; if (out.includes('HELD')) { clearTimeout(giveUp); resolve(); } });
-    helper.on('error', (error) => { clearTimeout(giveUp); reject(error); });
-    closed.then(() => { clearTimeout(giveUp); reject(new Error(`the lock helper ended before it held the lock: ${err}`)); });
-  });
-  return async () => { helper.stdin.end('\n'); await closed; };
+  try {
+    await new Promise((resolve, reject) => {
+      const giveUp = setTimeout(() => reject(new Error(`the lock helper did not answer in 30 seconds: ${err}`)), 30000);
+      helper.stdout.on('data', (data) => { out += data; if (out.includes('HELD')) { clearTimeout(giveUp); resolve(); } });
+      closed.then(() => { clearTimeout(giveUp); reject(new Error(`the lock helper ended before it held the lock: ${err}`)); });
+    });
+  } catch (error) {
+    helper.kill();
+    await release();
+    throw error;
+  }
+  return release;
 }
 
 test('the write of an import refused by the system after the file was opened: exit 1, the system\'s reason on stderr, none of the import in the ledger file, and the same import works once the cause is gone', { skip: process.platform === 'win32' ? false : 'needs a Windows byte-range lock held by powershell.exe' }, async (t) => {
@@ -97,24 +114,26 @@ test('the write of an import refused by the system after the file was opened: ex
   // 20,000 rows are about 1.3 MB of ledger text in one append: it reaches the locked byte.
   const rows = Array.from({ length: 20000 }, (_, i) => `row-${i},in,1`);
   fs.writeFileSync(path.join(dir, 'moves.csv'), `item,type,quantity\n${rows.join('\n')}\nnut,in,x\n`);
-  const release = await lockOneByte(t, file);
+  const release = await lockOneByte(file);
+  try {
+    const refused = cli(dir, ['import', 'moves.csv', '--rejects', 'rejects.csv']);
+    assert.deepEqual(refused, { code: 1, out: '', err: `stock-ledger: cannot use ledger file ${file}: EBUSY: resource busy or locked, write\n` });
+    assert.throws(
+      () => recordMovements(file, rows.map((_, i) => ({ item: `row-${i}`, type: 'in', qty: 1 }))),
+      (err) => refuses('FILE_ERROR')(err) && err.message.endsWith(', write'),
+    );
 
-  const refused = cli(dir, ['import', 'moves.csv', '--rejects', 'rejects.csv']);
-  assert.deepEqual(refused, { code: 1, out: '', err: `stock-ledger: cannot use ledger file ${file}: EBUSY: resource busy or locked, write\n` });
-  assert.throws(
-    () => recordMovements(file, rows.map((_, i) => ({ item: `row-${i}`, type: 'in', qty: 1 }))),
-    (err) => refuses('FILE_ERROR')(err) && err.message.endsWith(', write'),
-  );
+    // What is left: the ledger file as it was, readable, and no lock and no rejects file.
+    assert.equal(fs.readFileSync(file, 'utf8'), EARLIER);
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['moves.csv', 'stock-ledger.jsonl']);
+    assert.equal(cli(dir, ['qty', 'widget']).out, 'widget: 5\n');
 
-  // What is left: the ledger file as it was, readable, and no lock and no rejects file.
-  assert.equal(fs.readFileSync(file, 'utf8'), EARLIER);
-  assert.deepEqual(fs.readdirSync(dir).sort(), ['moves.csv', 'stock-ledger.jsonl']);
-  assert.equal(cli(dir, ['qty', 'widget']).out, 'widget: 5\n');
+    // A short append ends before the locked byte, so it goes through: the refusal above was of that one long write.
+    assert.equal(cli(dir, ['in', 'widget', '1']).out, 'recorded in 1 widget; quantity now 6\n');
+  } finally {
+    await release();
+  }
 
-  // A short append ends before the locked byte, so it goes through: the refusal above was of that one long write.
-  assert.equal(cli(dir, ['in', 'widget', '1']).out, 'recorded in 1 widget; quantity now 6\n');
-
-  await release();
   const again = cli(dir, ['import', 'moves.csv', '--rejects', 'rejects.csv']);
   assert.equal(again.code, 3);
   assert.equal(again.out, 'imported 20000 movements from moves.csv; rejected 1 of 20001 rows\n');
