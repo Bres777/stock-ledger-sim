@@ -191,8 +191,11 @@ locked-ledger checks) and
 `test/import-cli.test.js` (the `import` command through the real entry point), and left the five earlier test
 files as they were. Stage 4 added `test/append-failure.test.js`: two tests in which the system itself refuses
 the append to the ledger file, showing what the user is told and what is in the file afterwards (rule 23). On
-Windows the second one starts `powershell.exe` once, to hold a lock on the file from another process. It left
-the eight earlier test files, the three stress scripts and everything under `src/` as they were.
+Windows the second one starts `powershell.exe` once, to hold a lock on the file from another process. Both
+tests exist everywhere but do not run everywhere: the second is skipped off Windows, and the first is skipped
+for a user who can write to a read-only file (see "Stage 4 limits"). Stage 4 left the eight earlier test
+files and the three stress scripts as they were, and changed no code under `src/`: only two comments there,
+above `recordMovement` and `recordSetting`, which claimed more than the code holds.
 
 ```
 npm run stress
