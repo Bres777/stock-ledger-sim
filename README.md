@@ -193,9 +193,10 @@ files as they were. Stage 4 added `test/append-failure.test.js`: two tests in wh
 the append to the ledger file, showing what the user is told and what is in the file afterwards (rule 23). On
 Windows the second one starts `powershell.exe` once, to hold a lock on the file from another process. Both
 tests exist everywhere but do not run everywhere: the second is skipped off Windows, and the first is skipped
-for a user who can write to a read-only file (see "Stage 4 limits"). Stage 4 left the eight earlier test
-files and the three stress scripts as they were, and changed no code under `src/`: only two comments there,
-above `recordMovement` and `recordSetting`, which claimed more than the code holds.
+when running as root, on systems that have `process.getuid` (see "Stage 4 limits"). Stage 4 left the eight
+earlier test files and the three stress scripts as they were. It changed no executable code under `src/`; it
+changed only two comments there, above `recordMovement` and `recordSetting`, which claimed more than the code
+holds.
 
 ```
 npm run stress
@@ -533,5 +534,5 @@ Stage 4 limits:
 - **The items file is written the same way** (`recordSetting`: one append call, not undone), so both limits
   above hold for it too. No test makes that append fail.
 - **The second append-failure test runs on Windows only.** It needs a byte-range lock held by `powershell.exe`;
-  on other systems it is reported as skipped. The first one is skipped for a user who can write to a read-only
-  file (root).
+  on other systems it is reported as skipped. The first one is skipped when running as root, on systems that
+  have `process.getuid`. No other case is detected.
