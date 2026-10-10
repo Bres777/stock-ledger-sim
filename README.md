@@ -418,10 +418,11 @@ Stage 3 rules:
     under a mangled item name). A quote that is opened and never closed swallows the rest of the file, so
     everything from that line to the end is rejected as one row; the rows before it are recorded.
 23. **One import is one append under one lock** (rule 8) **— not an all-or-nothing transaction.** The ledger is
-    read once, the lines of every accepted row are joined into one text, and that text is handed to the system
-    in a single append call while the lock is held. So no writer that takes the lock — every `in`, `out` and
-    `import` does — can put a movement between two rows of one import. That is all it means. The append is
-    not undone if it fails or is cut short:
+    read once, the lines of every accepted row are joined into one text, and that text is given to Node in a
+    single `fs.appendFileSync` call while the lock is held (how many writes Node and the system make of it
+    is theirs to decide). So no writer that takes the lock — every `in`, `out` and `import` does — can put a
+    movement between two rows of one import. That is all it means. The append is not undone if it fails or
+    is cut short:
     - if the system refuses the append before taking any of the text, the ledger file is left as it was, and
       the command gives the system's reason on the error stream and exits `1` (tested, two real refusals:
       `test/append-failure.test.js`);
