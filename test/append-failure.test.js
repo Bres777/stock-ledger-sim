@@ -9,13 +9,14 @@
 // be produced on demand here. src/ledger.js does not undo an append, so the README's known limits apply.
 
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { LedgerError, readMovements, recordMovement, recordMovements } from '../src/ledger.js';
+import { lockOneByte } from '../test-support/lock-one-byte.js';
 
 const ENTRY = fileURLToPath(new URL('../bin/stock-ledger.js', import.meta.url));
 const EARLIER = '{"at":"2026-01-01T00:00:00.000Z","item":"widget","type":"in","qty":5}\n';
@@ -68,44 +69,12 @@ test('the append refused because the ledger file is read-only: exit 1, the syste
   assert.deepEqual(fs.readdirSync(dir).sort(), ['moves.csv', 'stock-ledger.jsonl']);
 });
 
-// Holds a lock on ONE byte of the file, 1 MiB from its start, from another process, until release() is
-// called. Windows refuses any write that would cover a byte another process has locked, so the ledger
-// file still opens and is still read (it is far shorter than 1 MiB), and an append long enough to reach
-// that byte is refused at the write. An append that ends before that byte is not affected.
+// The lock is held on ONE byte of the file, 1 MiB from its start, from another process, by lockOneByte
+// (test-support/lock-one-byte.js, since stage 6; before that a copy of it lived here). Windows refuses any
+// write that would cover a byte another process has locked, so the ledger file still opens and is still
+// read (it is far shorter than 1 MiB), and an append long enough to reach that byte is refused at the
+// write. An append that ends before that byte is not affected.
 const LOCKED_BYTE = 1024 * 1024;
-async function lockOneByte(file) {
-  const script = `$f=[IO.File]::Open($env:STOCK_LEDGER_TEST_FILE,'Open','ReadWrite','ReadWrite,Delete');$f.Lock(${LOCKED_BYTE},1);[Console]::Out.WriteLine('HELD');[Console]::Out.Flush();[void][Console]::In.ReadLine();$f.Close()`;
-  const helper = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, STOCK_LEDGER_TEST_FILE: file }, stdio: ['pipe', 'pipe', 'pipe'] });
-  let err = '';
-  const closed = new Promise((resolve) => { helper.on('close', resolve); helper.on('error', (error) => { err += error.message; resolve(); }); });
-  // The helper ends when its input ends. It is always ended, and waited for, before the test is over:
-  // a helper left running would keep the file open and the test run from finishing.
-  let released;
-  const release = () => {
-    released ??= (async () => {
-      const kill = setTimeout(() => helper.kill(), 10000);
-      helper.stdin.on('error', () => {});
-      helper.stdin.end('\n');
-      await closed;
-      clearTimeout(kill);
-    })();
-    return released;
-  };
-  let out = '';
-  helper.stderr.on('data', (data) => { err += data; });
-  try {
-    await new Promise((resolve, reject) => {
-      const giveUp = setTimeout(() => reject(new Error(`the lock helper did not answer in 30 seconds: ${err}`)), 30000);
-      helper.stdout.on('data', (data) => { out += data; if (out.includes('HELD')) { clearTimeout(giveUp); resolve(); } });
-      closed.then(() => { clearTimeout(giveUp); reject(new Error(`the lock helper ended before it held the lock: ${err}`)); });
-    });
-  } catch (error) {
-    helper.kill();
-    await release();
-    throw error;
-  }
-  return release;
-}
 
 test('the write of an import refused by the system after the file was opened: exit 1, the system\'s reason on stderr, none of the import in the ledger file, and the same import works once the cause is gone', { skip: process.platform === 'win32' ? false : 'needs a Windows byte-range lock held by powershell.exe' }, async (t) => {
   const dir = tempDir(t);
@@ -114,7 +83,7 @@ test('the write of an import refused by the system after the file was opened: ex
   // 20,000 rows are about 1.3 MB of ledger text in one append: it reaches the locked byte.
   const rows = Array.from({ length: 20000 }, (_, i) => `row-${i},in,1`);
   fs.writeFileSync(path.join(dir, 'moves.csv'), `item,type,quantity\n${rows.join('\n')}\nnut,in,x\n`);
-  const release = await lockOneByte(file);
+  const release = await lockOneByte(file, LOCKED_BYTE);
   try {
     const refused = cli(dir, ['import', 'moves.csv', '--rejects', 'rejects.csv']);
     assert.deepEqual(refused, { code: 1, out: '', err: `stock-ledger: cannot use ledger file ${file}: EBUSY: resource busy or locked, write\n` });

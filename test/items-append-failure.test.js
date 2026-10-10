@@ -10,7 +10,7 @@
 // produced on demand here. src/items.js does not undo an append, so the README's known limits apply.
 
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +18,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { LedgerError } from '../src/ledger.js';
 import { readSettings, recordSetting } from '../src/items.js';
+import { lockOneByte } from '../test-support/lock-one-byte.js';
 
 const ENTRY = fileURLToPath(new URL('../bin/stock-ledger.js', import.meta.url));
 const LEDGER = 'stock-ledger.jsonl';
@@ -77,46 +78,13 @@ test('the append refused because the items file is read-only: level and price ex
   assert.equal(cli(dir, ['low']).out, LOW_BEFORE);
 });
 
-// Holds a lock on ONE byte of the file, at `offset`, from another process, until release() is called.
-// Windows refuses any read or write that would cover a byte another process has locked. The items file
-// is far shorter than the offset and Node's read of it stops well before that byte, so the file still
-// opens and is still read; an append long enough to reach that byte is refused at the write. An append
-// that ends before that byte is not affected. (Same helper as test/append-failure.test.js, with the
-// offset as a parameter.)
-async function lockOneByte(file, offset) {
-  const script = `$f=[IO.File]::Open($env:STOCK_LEDGER_TEST_FILE,'Open','ReadWrite','ReadWrite,Delete');$f.Lock(${offset},1);[Console]::Out.WriteLine('HELD');[Console]::Out.Flush();[void][Console]::In.ReadLine();$f.Close()`;
-  const helper = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, STOCK_LEDGER_TEST_FILE: file }, stdio: ['pipe', 'pipe', 'pipe'] });
-  let err = '';
-  const closed = new Promise((resolve) => { helper.on('close', resolve); helper.on('error', (error) => { err += error.message; resolve(); }); });
-  // The helper ends when its input ends. It is always ended, and waited for, before the test is over:
-  // a helper left running would keep the file open and the test run from finishing.
-  let released;
-  const release = () => {
-    released ??= (async () => {
-      const kill = setTimeout(() => helper.kill(), 10000);
-      helper.stdin.on('error', () => {});
-      helper.stdin.end('\n');
-      await closed;
-      clearTimeout(kill);
-    })();
-    return released;
-  };
-  let out = '';
-  helper.stderr.on('data', (data) => { err += data; });
-  try {
-    await new Promise((resolve, reject) => {
-      const giveUp = setTimeout(() => reject(new Error(`the lock helper did not answer in 30 seconds: ${err}`)), 30000);
-      helper.stdout.on('data', (data) => { out += data; if (out.includes('HELD')) { clearTimeout(giveUp); resolve(); } });
-      closed.then(() => { clearTimeout(giveUp); reject(new Error(`the lock helper ended before it held the lock: ${err}`)); });
-    });
-  } catch (error) {
-    helper.kill();
-    await release();
-    throw error;
-  }
-  return release;
-}
-
+// The lock is held on ONE byte of the items file, at LOCKED_BYTE, from another process, by lockOneByte
+// (test-support/lock-one-byte.js, since stage 6; before that a copy of it lived here). Windows refuses any
+// read or write that would cover a byte another process has locked. The items file is far shorter than the
+// offset and Node's read of it stops well before that byte, so the file still opens and is still read; an
+// append long enough to reach that byte is refused at the write. An append that ends before that byte is
+// not affected.
+//
 // A setting line is about 80 bytes, so to reach a locked byte beyond the read the line has to be long:
 // the item name carries the length (an item name has no length limit, rule 3). 20,000 characters is as
 // much as fits comfortably in a Windows command line; the locked byte is 16 KiB from the start of a
