@@ -129,8 +129,9 @@ export function readSettings(file) {
   return settingsFrom(parseItemsText(readText(file), file));
 }
 
-// Records one setting and returns the stored record. Either the whole line is appended or
-// nothing is written. The item does not need to have any movements yet.
+// Records one setting and returns the stored record. The line is written with one append
+// call. If the system refuses that append the file is left as it was; an append that fails
+// part-way is not undone. The item does not need to have any movements yet.
 export function recordSetting(file, { item: rawItem, set, value: rawValue, at = new Date() }) {
   const item = normalizeItem(rawItem);
   if (!SETTINGS.includes(set)) {

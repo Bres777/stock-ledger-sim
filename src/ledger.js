@@ -166,7 +166,8 @@ export function withLock(file, action) {
 }
 
 // Records one movement and returns { movement, quantity } where quantity is the item's
-// quantity after it. Either the whole line is appended or nothing is written.
+// quantity after it. The line is written with one append call. If the system refuses that
+// append the file is left as it was; an append that fails part-way is not undone.
 export function recordMovement(file, { item: rawItem, type: rawType, qty: rawQty, at = new Date() }) {
   const item = normalizeItem(rawItem);
   const type = checkType(rawType);
